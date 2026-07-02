@@ -169,11 +169,3 @@ Where:
 }
 ```
 
-## Contact
-
-**Ritwik Rohan**  
-Robotics Engineer | Johns Hopkins MSE '25  
-Email: ritwikrohan7@gmail.com  
-LinkedIn: [linkedin.com/in/ritwik-rohan](https://linkedin.com/in/ritwik-rohan)
-
----

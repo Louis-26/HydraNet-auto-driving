@@ -18,7 +18,7 @@ Implementation of a multi-task learning architecture that performs three critica
 ### Architecture 
 
 <div align="center">
-<img src="architecture.png" width="800">
+<img src="report_document/architecture.png" width="800">
 </div>
 
 *Multi-task architecture with shared MobileNetV2 encoder and task-specific decoders. Orange: Pretrained seg+depth, Blue: Detection head training*

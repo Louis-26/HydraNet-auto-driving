@@ -1,55 +1,149 @@
-#!/bin/bash
-# This script is used to update a specific folder locally, with the folder the same name
-# from a remote git repo.
+#!/usr/bin/env bash
+# git_update_script.sh
+#
+# Replace a local folder (default: git_script) with the same-named folder
+# pulled fresh from a remote git repo's specific branch. Intended to sync
+# shared tooling (like git_script/) across many repos from one source of truth.
+#
+# Any flag you don't provide silently falls back to the default — there are
+# no interactive prompts. This makes the script safe to call from other
+# scripts (like git_search.sh) and keeps bare-no-args invocation fast.
+#
+# Usage:
+#   git_update_script.sh                              # all defaults
+#   git_update_script.sh --target-repo URL --folder-name NAME ...   # override any subset
+#
+# Flags:
+#   --target-repo / --target_repo   URL       Remote repo URL, no trailing .git required
+#   --folder-name / --folder_name   NAME      Folder inside the repo to grab
+#   --branch-name / --branch_name   NAME      Branch to pull from
+#   --save-folder / --save_folder   PATH      Scratch dir to stage the download
+#   -h / --help                               Show this message
+
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+# -------- defaults --------
+
+DEFAULT_REPO_URL="https://github.com/Louis-26/git_script_template"
+DEFAULT_FOLDER_NAME="git_script"
+DEFAULT_BRANCH_NAME="main"
+DEFAULT_SAVE_DIR="${HOME//\\//}/Downloads"
+
+# -------- cli parsing --------
+
+REPO_URL="$DEFAULT_REPO_URL"
+FOLDER_NAME="$DEFAULT_FOLDER_NAME"
+BRANCH_NAME="$DEFAULT_BRANCH_NAME"
+SAVE_DIR="$DEFAULT_SAVE_DIR"
+
+print_help() {
+    sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0
+}
+
+need_value() {
+    local flag="$1"
+    local value="${2:-}"
+
+    if [ -z "$value" ] || [[ "$value" == --* ]]; then
+        echo "ERROR: $flag requires a value." >&2
+        exit 2
+    fi
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --target-repo|--target_repo)
+            need_value "$1" "${2:-}"
+            REPO_URL="$2"
+            shift 2
+            ;;
+
+        --folder-name|--folder_name)
+            need_value "$1" "${2:-}"
+            FOLDER_NAME="$2"
+            shift 2
+            ;;
+
+        --branch-name|--branch_name)
+            need_value "$1" "${2:-}"
+            BRANCH_NAME="$2"
+            shift 2
+            ;;
+
+        --save-folder|--save_folder)
+            need_value "$1" "${2:-}"
+            SAVE_DIR="$2"
+            shift 2
+            ;;
+
+        -h|--help)
+            print_help
+            ;;
+
+        *)
+            echo "Unknown argument: $1" >&2
+            echo "Run with --help for usage." >&2
+            exit 2
+            ;;
+    esac
+done
+
+# Normalize Windows-style backslashes to forward slashes
+SAVE_DIR="${SAVE_DIR//\\//}"
+
+# -------- sanity checks --------
+
+if [ ! -d "$SAVE_DIR" ]; then
+    echo "Creating scratch directory: $SAVE_DIR"
+    mkdir -p "$SAVE_DIR" || {
+        echo "Failed to create $SAVE_DIR" >&2
+        exit 1
+    }
+fi
 
 ORIGINAL_DIR="$(pwd)"
 
-# step 1: download the target folder from the remote git repo
-DEFAULT_SAVE_DIR="${HOME//\\//}/Downloads"
-DEFAULT_REPO_URL="https://github.com/Louis-26/git_script_template"
-DEFAULT_FOLDER_NAME="git_script"
+echo
+echo "Update plan:"
+echo "  From:   $REPO_URL  (branch: $BRANCH_NAME)"
+echo "  Folder: $FOLDER_NAME"
+echo "  Stage:  $SAVE_DIR"
+echo "  Target: $ORIGINAL_DIR/$FOLDER_NAME"
+echo
 
-read -r -p "Enter the url of the target repo from the github
-(e.g., https://github.com/Louis-26/personal_note): " REPO_URL
-read -p "Enter the folder name from git repo: " FOLDER_NAME
-read -p "Enter the branch name (default is main): " BRANCH_NAME
-read -r -p "Enter the directory name of folder to save the downloaded folder locally
-(e.g., C:/Users/USERNAME/Downloads), by default it is $DEFAULT_SAVE_DIR: " SAVE_DIR
+# -------- 1. sparse-checkout the folder into a temp dir --------
 
-# Default branch to main if empty
-BRANCH_NAME=${BRANCH_NAME:-main}
-SAVE_DIR="${SAVE_DIR:-$DEFAULT_SAVE_DIR}"
+TMP_DIR="$(mktemp -d "$SAVE_DIR/update_script_XXXXXX")"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
-# Default repo url if empty
-REPO_URL=${REPO_URL:-$DEFAULT_REPO_URL}
-# Default folder name if empty
-FOLDER_NAME=${FOLDER_NAME:-$DEFAULT_FOLDER_NAME}
+cd "$TMP_DIR"
 
-echo $SAVE_DIR
-SAVE_DIR="${SAVE_DIR//\\//}"
-cd $SAVE_DIR
-mkdir download_folder
-cd download_folder
-
-git init
-git remote add origin ${REPO_URL}.git
+git init -q
+git remote add origin "${REPO_URL%.git}.git"
 git sparse-checkout init --no-cone
 git sparse-checkout set "$FOLDER_NAME"
-git pull "$REPO_URL" "$BRANCH_NAME"
 
-# Now clean everything except the target folder inside temp_repo
-shopt -s extglob  # enable extended globbing
+echo "Fetching $FOLDER_NAME from $BRANCH_NAME ..."
 
-# Delete all files and directories except the folder we want
-#rm -rf !("$FOLDER_NAME")
-#rm -rf .[^.]* .??*
+if ! git pull --quiet "${REPO_URL%.git}.git" "$BRANCH_NAME"; then
+    echo "Pull failed. Check the URL/branch and try again." >&2
+    exit 1
+fi
 
-# move the target folder to the parent directory
-mv "$FOLDER_NAME" "$SAVE_DIR"
-cd "$SAVE_DIR"
-rm -rf download_folder
+if [ ! -d "$FOLDER_NAME" ]; then
+    echo "The folder '$FOLDER_NAME' was not found at the top level of $BRANCH_NAME." >&2
+    exit 1
+fi
 
-# step 2: replace the local folder with the downloaded folder
-rm -rf "$ORIGINAL_DIR/$FOLDER_NAME"
-mv "$SAVE_DIR/$FOLDER_NAME" "$ORIGINAL_DIR"
-echo "Done! The folder '$FOLDER_NAME' has been updated in $ORIGINAL_DIR/$FOLDER_NAME"
+# -------- 2. replace the local folder with the downloaded one --------
+
+cd "$ORIGINAL_DIR"
+
+rm -rf -- "$ORIGINAL_DIR/$FOLDER_NAME"
+mv -- "$TMP_DIR/$FOLDER_NAME" "$ORIGINAL_DIR/"
+
+echo
+echo "Done! '$FOLDER_NAME' was updated in $ORIGINAL_DIR/$FOLDER_NAME"

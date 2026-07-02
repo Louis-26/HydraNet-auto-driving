@@ -1,8 +1,12 @@
-# download from remote repository to local directory of main branch
+cd "$(git rev-parse --show-toplevel)"
+# download from remote repository to local directory
 # pull from remote repository to keep local directory updated
-# by default, the name of main branch is `main`
+
+CURRENT_BRANCH=$(git branch --show-current)
+
 git fetch
 
-git checkout main
+git checkout "$CURRENT_BRANCH"
 
-git pull origin main
+git pull origin "$CURRENT_BRANCH"
+

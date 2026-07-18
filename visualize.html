@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HydraNet Architecture Animation</title>
+    <style>
+        body {
+            background-color: #0d1117;
+            color: #c9d1d9;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .container {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            position: relative;
+        }
+
+        /* 模块基础样式 */
+        .box {
+            background: #161b22;
+            border: 2px solid #30363d;
+            border-radius: 8px;
+            padding: 15px 20px;
+            text-align: center;
+            position: relative;
+            z-index: 2;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            width: 160px;
+        }
+
+        .box h3 { margin: 0 0 10px 0; font-size: 16px; color: #58a6ff; }
+        .box p { margin: 0; font-size: 12px; color: #8b949e; }
+
+        /* 冻结状态 (Stage 1) */
+        .frozen {
+            border-color: #238636;
+            background: rgba(35, 134, 54, 0.1);
+        }
+        .frozen::after {
+            content: '❄️ Frozen';
+            position: absolute;
+            top: -10px;
+            right: -10px;
+            background: #238636;
+            color: white;
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 10px;
+        }
+
+        /* 训练活跃状态 (Stage 2) */
+        .active {
+            border-color: #ff7b72;
+            background: rgba(255, 123, 114, 0.1);
+            animation: pulse-border 2s infinite;
+        }
+        .active::after {
+            content: '🔥 Training';
+            position: absolute;
+            top: -10px;
+            right: -10px;
+            background: #ff7b72;
+            color: white;
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 10px;
+        }
+
+        /* 脉冲发光动画 */
+        @keyframes pulse-border {
+            0% { box-shadow: 0 0 0 0 rgba(255, 123, 114, 0.4); }
+            70% { box-shadow: 0 0 0 15px rgba(255, 123, 114, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(255, 123, 114, 0); }
+        }
+
+        /* 流动连接线容器 */
+        .branch-container {
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+            position: relative;
+        }
+
+        .line {
+            height: 4px;
+            width: 100px;
+            background: #30363d;
+            position: relative;
+            overflow: hidden;
+            border-radius: 2px;
+        }
+
+        .line-long { width: 140px; }
+
+        /* 数据流动画 */
+        .data-flow {
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 100%;
+            width: 40%;
+            background: linear-gradient(90deg, transparent, #58a6ff, transparent);
+            animation: flow 1.5s linear infinite;
+        }
+
+        .data-flow-active {
+            background: linear-gradient(90deg, transparent, #ff7b72, transparent);
+            animation: flow 1s linear infinite;
+        }
+
+        @keyframes flow {
+            0% { left: -50%; }
+            100% { left: 150%; }
+        }
+
+        /* 分支连接器的视觉修饰 */
+        .connector {
+            position: absolute;
+            width: 4px;
+            background: #30363d;
+            left: -20px;
+            top: 50px;
+            bottom: 50px;
+            z-index: 1;
+        }
+
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <!-- 1. Input -->
+    <div class="box">
+        <h3 style="color:#8b949e;">Input</h3>
+        <p>RGB Image (B, 3, H, W)</p>
+    </div>
+
+    <div class="line"><div class="data-flow"></div></div>
+
+    <!-- 2. Shared Backbone -->
+    <div class="box frozen">
+        <h3>Encoder</h3>
+        <p>MobileNetV2</p>
+    </div>
+
+    <div class="line"><div class="data-flow"></div></div>
+
+    <!-- 3. Shared Decoder -->
+    <div class="box frozen">
+        <h3>Decoder</h3>
+        <p>Light-Weight RefineNet</p>
+    </div>
+
+    <!-- 连接分支的线 -->
+    <div style="position: relative; width: 60px;">
+        <div class="line" style="position: absolute; top: 0; left: 0; width: 100px; transform: translateY(-80px) rotate(-35deg); transform-origin: left;">
+            <div class="data-flow"></div>
+        </div>
+        <div class="line" style="position: absolute; top: 0; left: 0; width: 80px;">
+            <div class="data-flow"></div>
+        </div>
+        <div class="line" style="position: absolute; top: 0; left: 0; width: 100px; transform: translateY(80px) rotate(35deg); transform-origin: left;">
+            <div class="data-flow-active"></div>
+        </div>
+    </div>
+
+    <!-- 4. Task Heads -->
+    <div class="branch-container">
+        
+        <!-- Segmentation Head -->
+        <div class="box frozen" style="transform: translateY(-40px);">
+            <h3>Seg Head</h3>
+            <p>Semantic Seg (7 Classes)</p>
+        </div>
+
+        <!-- Depth Head -->
+        <div class="box frozen">
+            <h3>Depth Head</h3>
+            <p>Monocular Depth</p>
+        </div>
+
+        <!-- YOLOv8 Detection Head -->
+        <div class="box active" style="transform: translateY(40px);">
+            <h3 style="color:#ff7b72;">YOLOv8 Head</h3>
+            <p>L3, L5, L7 Features<br>CIoU + DFL + BCE Loss</p>
+        </div>
+
+    </div>
+</div>
+
+</body>
+</html>

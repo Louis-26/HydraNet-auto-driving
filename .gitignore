@@ -207,3 +207,10 @@ marimo/_lsp/
 __marimo__/
 
 .idea
+.vscode
+
+# dataset
+cv-multitask-learning-project/kitti_raw_data/
+cv-multitask-learning-project/dummy_data
+cv-multitask-learning-project/data
+/git_script/

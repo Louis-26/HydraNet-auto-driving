@@ -1,0 +1,12 @@
+opencv-python
+matplotlib
+tqdm
+Pillow
+prefetch_generator
+albumentations
+timm==0.6.13
+efficientnet_pytorch
+
+notebook
+ipykernel
+ipywidgets

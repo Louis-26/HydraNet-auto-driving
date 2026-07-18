@@ -210,7 +210,10 @@ __marimo__/
 .vscode
 
 # dataset
-cv-multitask-learning-project/kitti_raw_data/
-cv-multitask-learning-project/dummy_data
-cv-multitask-learning-project/data
+framework/dummy_data
+framework/data
 /git_script/
+
+# this is from original folder, just for reference
+/framework/outputs/ 
+

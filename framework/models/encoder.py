@@ -1,63 +1,60 @@
-import torch
+import os
 import torch.nn as nn
-
-# ---------- General utility layers ----------
-def conv3x3(in_channels, out_channels, stride=1, dilation=1, groups=1, bias=False):
-    return nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride,
-                     padding=dilation, dilation=dilation, bias=bias, groups=groups)
-
-def conv1x1(in_channels, out_channels, stride=1, groups=1, bias=False):
-    return nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride,
-                     padding=0, bias=bias, groups=groups)
-
-def batchnorm(num_features):
-    return nn.BatchNorm2d(num_features, affine=True, eps=1e-5, momentum=0.1)
-
-def convbnrelu(in_channels, out_channels, kernel_size, stride=1, groups=1, act=True):
-    layers = [
-        nn.Conv2d(in_channels, out_channels, kernel_size, stride=stride,
-                  padding=int(kernel_size / 2.), groups=groups, bias=False),
-        batchnorm(out_channels)
-    ]
-    if act:
-        layers.append(nn.ReLU6(inplace=True))
-    return nn.Sequential(*layers)
-
-# ---------- MobileNet encoder ----------
-class InvertedResidualBlock(nn.Module):
-    def __init__(self, in_planes, out_planes, expansion_factor, stride=1):
+from torchvision.models import mobilenet_v2
+from torch.nn import functional as F
+import torch
+# ==========================================
+# 1. Shared Backbone: MobileNetV2 Encoder
+# ==========================================
+class MobileNetV2Encoder(nn.Module):
+    def __init__(self, pretrained=True):
         super().__init__()
-        intermed_planes = in_planes * expansion_factor
-        self.residual = (in_planes == out_planes) and (stride == 1)
-        self.output = nn.Sequential(
-            convbnrelu(in_planes, intermed_planes, 1),
-            convbnrelu(intermed_planes, intermed_planes, 3, stride=stride, groups=intermed_planes),
-            convbnrelu(intermed_planes, out_planes, 1, act=False)
-        )
+        
+        # Instantiate the bare architecture with NO weights initially
+        base_model = mobilenet_v2(weights=None)
+        
+        if pretrained:
+            # 1. Dynamically resolve the absolute path to checkpoints/pretrained
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            project_root = os.path.dirname(current_dir)
+            ckpt_dir = os.path.join(project_root, "checkpoints", "pretrained")
+            
+            # Ensure the directory exists
+            os.makedirs(ckpt_dir, exist_ok=True)
+            
+            # The exact URL for the official MobileNetV2 weights
+            weight_url = "https://download.pytorch.org/models/mobilenet_v2-7ebf99e0.pth"
+            
+            # 2. Smart Loading Mechanism:
+            # PyTorch will automatically check if the .pth file exists in 'model_dir'.
+            # If YES: It directly loads from your local checkpoints/pretrained/ folder.
+            # If NO: It downloads it, saves it to that folder, and then loads it.
+            state_dict = torch.hub.load_state_dict_from_url(
+                weight_url, 
+                model_dir=ckpt_dir, 
+                file_name="mobilenet_v2.pth",
+                progress=True
+            )
+            
+            # Load the weights into our bare model
+            base_model.load_state_dict(state_dict)
+            print(f"✅ MobileNetV2 weights loaded successfully from: {ckpt_dir}")
+
+        # Extract features from the initialized model
+        features = base_model.features
+        
+        # Extract features at different scales
+        self.layer1 = features[:4]   # Output channels: 24
+        self.layer2 = features[4:7]  # Output channels: 32
+        self.layer3 = features[7:14] # Output channels: 96
+        
+        # Stop at index 18 to exclude the final 1x1 expansion conv layer
+        # This ensures the output is exactly 320 channels, not 1280.
+        self.layer4 = features[14:18] 
 
     def forward(self, x):
-        out = self.output(x)
-        return out + x if self.residual else out
-
-def define_mobilenet(self):
-    mobilenet_config = [[1, 16, 1, 1],
-                        [6, 24, 2, 2],
-                        [6, 32, 3, 2],
-                        [6, 64, 4, 2],
-                        [6, 96, 3, 1],
-                        [6, 160, 3, 2],
-                        [6, 320, 1, 1]]
-
-    self.in_channels = 32
-    self.num_layers = len(mobilenet_config)
-    self.layer1 = convbnrelu(3, self.in_channels, kernel_size=3, stride=2)
-
-    c_layer = 2
-    for t, c, n, s in mobilenet_config:
-        layers = []
-        for idx in range(n):
-            layers.append(InvertedResidualBlock(
-                self.in_channels, c, expansion_factor=t, stride=s if idx == 0 else 1))
-            self.in_channels = c
-        setattr(self, f'layer{c_layer}', nn.Sequential(*layers))
-        c_layer += 1
+        l1 = self.layer1(x)
+        l2 = self.layer2(l1)
+        l3 = self.layer3(l2)
+        l4 = self.layer4(l3)
+        return l1, l2, l3, l4

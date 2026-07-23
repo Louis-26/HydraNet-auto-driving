@@ -215,5 +215,12 @@ framework/data
 /git_script/
 
 # this is from original folder, just for reference
-/framework/outputs/ 
+/framework/outputs_reference/ 
 
+
+/framework/outputs/ 
+/framework/dummy_outputs/ 
+
+
+# saved model checkpoints
+/framework/checkpoints/

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Define target directory preserving original conventions
-CHKPT_DIR="$(git rev-parse --show-toplevel)/cv-multitask-learning-project/checkpoints"
+CHKPT_DIR="$(git rev-parse --show-toplevel)/framework/checkpoints/pretrained" 
 WEIGHT_NAME="ExpKITTI_joint.ckpt"
 FILE_PATH="${CHKPT_DIR}/${WEIGHT_NAME}"
 

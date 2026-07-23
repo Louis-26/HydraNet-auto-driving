@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
 
 # ==============================================================================
-# HydraNet - Official Benchmarks Downloader 
-# (Modified for 5 Minimal Scenes, Flat Structure, and Custom Train/Val/Test Split)
+# HydraNet - Official Benchmarks Downloader
+# (5 Minimal Raw/Depth Scenes, merged into one RGB+depth tree, pruned to an
+#  exact 1:1 images<->depth pairing, and flattened to <split>/{images,depth};
+#  Object Detection self-split 7:2:1 with images/labels renaming; Semantic
+#  Segmentation now also self-split 7:2:1 with the unlabeled official
+#  testing/ discarded, matching Object Detection.)
+#
+# Assumptions made below that are easy to get wrong reading this cold -
+# flagged again in the chat reply, search for "ASSUMPTION" to find them
+# in this file.
 # ==============================================================================
 
 set -uo pipefail
 
 # ==============================================================================
-# DOWNLOAD LINKS 
+# DOWNLOAD LINKS
 # ==============================================================================
 URL_OBJ_IMG="https://s3.eu-central-1.amazonaws.com/avg-kitti/data_object_image_2.zip"
 URL_OBJ_LBL="https://s3.eu-central-1.amazonaws.com/avg-kitti/data_object_label_2.zip"
@@ -40,8 +48,6 @@ FAILED_TASKS=()
 
 # ------------------------------------------------------------------
 # Download with Retry Module
-# Continuously retries the download if the connection drops.
-# Uses 'curl -C -' to resume from the last downloaded byte.
 # ------------------------------------------------------------------
 download_with_retry() {
     local url="$1" out="$2" attempt=1
@@ -60,8 +66,6 @@ download_with_retry() {
 
 # ------------------------------------------------------------------
 # Fetch and Extract Module
-# Downloads a specific zip file, verifies its integrity, 
-# and unzips it into the specified directory.
 # ------------------------------------------------------------------
 fetch_and_extract() {
     local label="$1" url="$2" dir="$3" zipname="$4"
@@ -70,7 +74,6 @@ fetch_and_extract() {
 
     mkdir -p "$dir"
 
-    # Skip if the completion marker exists
     if [ -f "$marker" ]; then
         echo "   [SKIP] ${label} already downloaded."
         return 0
@@ -94,87 +97,134 @@ fetch_and_extract() {
 }
 
 # ------------------------------------------------------------------
-# Split Object & Semantics Datasets (80% Train / 20% Val)
-# This function handles the physical separation of the default KITTI
-# 'training' folder into 'train' and 'val' to match the dataloader.
+# split_dataset BASE_DIR REF_MODALITY RATIOS KEEP_TESTING [RENAMES]
+#
+# Generic splitter for the official "training/<modality>/..." (+ optional
+# "testing/<modality>/...") layout used by both kitti_object and
+# kitti_semantics.
+#
+#   RATIOS       colon-separated weights, "8:2" (train:val) or "7:2:1"
+#                (train:val:test). Applied ONLY to training/ - files are
+#                assigned round-robin by sorted index (file 1 -> bucket 0,
+#                file 2 -> bucket 1, ...), not "first/last N%", so the
+#                held-out portion is spread across the id range instead of
+#                clustered at one end.
+#   KEEP_TESTING 1 = official testing/ (no public labels) is kept, just
+#                renamed to test/.
+#                0 = official testing/ is deleted outright - use this when
+#                RATIOS already carves a labeled test/ out of training/,
+#                which makes the unlabeled official testing/ dead weight.
+#   RENAMES      optional "old1=new1,old2=new2" - modality subfolders are
+#                written under the new name (e.g. "image_2=images").
+#
+# Modality subfolders under training/ are auto-discovered (not hardcoded),
+# and for each reference file its counterpart in every other modality is
+# matched by id with the extension wildcarded (image_2 is .png, label_2 is
+# .txt - matching the literal filename would silently miss every label).
+# Idempotent via a per-dataset marker file.
 # ------------------------------------------------------------------
-split_object_and_semantics() {
-    echo " -> ✂️  Splitting Object & Semantics datasets into Train and Val (80/20 split)..."
-    
-    for dataset in "kitti_object" "kitti_semantics"; do
-        local ds_dir="${BASE_DIR}/${dataset}"
-        local marker="${ds_dir}/.done_split"
-        
-        # If the 'training' folder is missing or the split is already done, skip to the next dataset
-        if [ ! -d "${ds_dir}/training" ] || [ -f "$marker" ]; then
-            continue
-        fi
+split_dataset() {
+    local base_dir="$1" ref_modality="$2" ratios="$3" keep_testing="$4" renames="${5:-}"
+    local marker="${base_dir}/.done_split"
 
-        # Step 1: Rename the official 'training' directory to 'train'
-        # At this point, 'train' contains 100% of the labeled data.
-        mv "${ds_dir}/training" "${ds_dir}/train"
-        
-        # Step 2: Create the corresponding 'val' directory structure
-        # This mirrors all subfolders (e.g., image_2, label_2, semantic_rgb) from 'train' to 'val'
-        mkdir -p "${ds_dir}/val"
-        for subfolder in "${ds_dir}/train"/*; do
-            if [ -d "$subfolder" ]; then
-                local sub_name=$(basename "$subfolder")
-                mkdir -p "${ds_dir}/val/${sub_name}"
-            fi
+    if [ -f "$marker" ]; then
+        echo "   [SKIP] ${base_dir} already split."
+        return 0
+    fi
+    if [ ! -d "${base_dir}/training/${ref_modality}" ]; then
+        echo "❌ ${base_dir}/training/${ref_modality} not found - can't split."
+        FAILED_TASKS+=("Split - ${base_dir} (missing ${ref_modality})")
+        return 1
+    fi
+
+    local split_names=(train val test)
+    local weights=()
+    IFS=':' read -r -a weights <<< "$ratios"
+    local n_splits=${#weights[@]}
+    local total_weight=0 w
+    for w in "${weights[@]}"; do total_weight=$((total_weight + w)); done
+
+    local -A rename_of=()
+    if [ -n "$renames" ]; then
+        local pairs=() pair old new
+        IFS=',' read -r -a pairs <<< "$renames"
+        for pair in "${pairs[@]}"; do
+            old="${pair%%=*}"; new="${pair#*=}"
+            rename_of["$old"]="$new"
         done
+    fi
 
-        # Step 3: Determine the reference folder to count the total number of files
-        # kitti_object uses 'image_2', kitti_semantics uses 'images'
-        if [ -d "${ds_dir}/train/image_2" ]; then
-            local ref_folder="image_2"
-        elif [ -d "${ds_dir}/train/images" ]; then
-            local ref_folder="images"
+    local modalities=() m
+    for m in "${base_dir}/training"/*/; do
+        [ -d "$m" ] || continue
+        modalities+=("$(basename "$m")")
+    done
+
+    local -A dest_name=()
+    for m in "${modalities[@]}"; do
+        if [ -n "${rename_of[$m]:-}" ]; then
+            dest_name["$m"]="${rename_of[$m]}"
         else
-            continue
+            dest_name["$m"]="$m"
         fi
+    done
 
-        # Count total files in the reference folder and calculate 20% for the validation set
-        local files=($(ls -1 "${ds_dir}/train/${ref_folder}" | grep -E '\.png|\.jpg'))
-        local total=${#files[@]}
-        local val_count=$((total * 20 / 100))
-        
-        echo "      Processing ${dataset}: Moving ${val_count} of ${total} files to val..."
+    local i s
+    for (( i=0; i<n_splits; i++ )); do
+        s="${split_names[$i]}"
+        mkdir -p "${base_dir}/${s}"
+        for m in "${modalities[@]}"; do
+            mkdir -p "${base_dir}/${s}/${dest_name[$m]}"
+        done
+    done
 
-        # Step 4: Move the exact 20% of files from 'train' to 'val'
-        # By doing this, 'train' is left with 80%, and 'val' acquires the remaining 20%
-        for (( i=${total}-${val_count}; i<${total}; i++ )); do
-            local filename="${files[$i]}"
-            local base_name="${filename%.*}"
-            
-            # Loop through all subfolders (images, labels, etc.) and move the matching file ID
-            for subfolder in "${ds_dir}/train"/*; do
-                if [ -d "$subfolder" ]; then
-                    local sub_name=$(basename "$subfolder")
-                    # Check and move .png (images/masks) or .txt (labels) if they exist
-                    if [ -f "${subfolder}/${base_name}.png" ]; then
-                        mv "${subfolder}/${base_name}.png" "${ds_dir}/val/${sub_name}/"
-                    elif [ -f "${subfolder}/${base_name}.txt" ]; then
-                        mv "${subfolder}/${base_name}.txt" "${ds_dir}/val/${sub_name}/"
-                    fi
-                fi
+    local counts=()
+    for (( i=0; i<n_splits; i++ )); do counts+=(0); done
+
+    local idx=0 f ref_name id_noext bucket cum which mod src
+    for f in "${base_dir}/training/${ref_modality}"/*; do
+        [ -f "$f" ] || continue
+        ref_name="$(basename "$f")"
+        id_noext="${ref_name%.*}"
+        bucket=$(( idx % total_weight ))
+        idx=$((idx + 1))
+
+        cum=0
+        which=$((n_splits - 1))
+        for (( i=0; i<n_splits; i++ )); do
+            cum=$((cum + weights[i]))
+            if (( bucket < cum )); then which=$i; break; fi
+        done
+        s="${split_names[$which]}"
+        counts[$which]=$(( counts[$which] + 1 ))
+
+        for mod in "${modalities[@]}"; do
+            for src in "${base_dir}/training/${mod}/${id_noext}".*; do
+                [ -f "$src" ] || continue
+                mv "$src" "${base_dir}/${s}/${dest_name[$mod]}/$(basename "$src")"
             done
         done
-        
-        # Step 5: Rename the official 'testing' directory (which has no labels) to 'test'
-        if [ -d "${ds_dir}/testing" ]; then
-            mv "${ds_dir}/testing" "${ds_dir}/test"
-        fi
-        
-        # Place a marker to prevent re-splitting on future runs
-        touch "$marker"
-        echo "      ✅ ${dataset} split completed."
     done
+
+    rm -rf "${base_dir}/training"
+
+    if [ "$keep_testing" = "1" ] && [ -d "${base_dir}/testing" ]; then
+        rm -rf "${base_dir}/test"
+        mv "${base_dir}/testing" "${base_dir}/test"
+    else
+        rm -rf "${base_dir}/testing"
+    fi
+
+    touch "$marker"
+    local summary=""
+    for (( i=0; i<n_splits; i++ )); do
+        summary="${summary}${split_names[$i]}=${counts[$i]} "
+    done
+    echo "   ✅ Split complete (ratio ${ratios}): ${summary}"
 }
 
 # ------------------------------------------------------------------
 # Depth Data Cleanup, Flattening & Splitting Module
-# Removes unnecessary nested folders and applies the custom Train/Val/Test split.
 # ------------------------------------------------------------------
 cleanup_depth_data() {
     echo " -> 🧹 Optimizing Depth GT: Flattening, removing '_sync', and applying Train/Val/Test split..."
@@ -196,7 +246,6 @@ cleanup_depth_data() {
                     local clean_name="${dirname%_sync}" # Strip the '_sync' suffix
                     local target_folder=""
 
-                    # Match the scene name against our predefined arrays to determine its destination
                     for s in "${TRAIN_SCENES[@]}"; do
                         if [ "$clean_name" == "$s" ]; then target_folder="split_train"; break; fi
                     done
@@ -213,10 +262,8 @@ cleanup_depth_data() {
                             mv "$dir/proj_depth/groundtruth/"* "$dir/" 2>/dev/null || true
                             rm -rf "$dir/proj_depth"
                         fi
-                        # Move the flattened folder to its assigned train/val/test directory
                         mv "$dir" "${DEPTH_DIR}/${target_folder}/${clean_name}"
                     else
-                        # Discard any scenes that are not part of our 5 minimal scenes
                         rm -rf "$dir"
                     fi
                 fi
@@ -224,19 +271,193 @@ cleanup_depth_data() {
         fi
     done
     
-    # Replace the original KITTI folders with our strictly organized split folders
     rm -rf "${DEPTH_DIR}/train" "${DEPTH_DIR}/val"
     mv "${DEPTH_DIR}/split_train" "${DEPTH_DIR}/train"
     mv "${DEPTH_DIR}/split_val" "${DEPTH_DIR}/val"
     mv "${DEPTH_DIR}/split_test" "${DEPTH_DIR}/test"
     
     touch "$depth_marker"
-    echo "   ✅ Cleanup & splitting complete! Check data/kitti_depth/ for train/val/test folders."
+    echo "   ✅ Cleanup & splitting complete!"
 }
 
-# ==============================================================================
-# PIPELINE START
-# ==============================================================================
+# ------------------------------------------------------------------
+# verify_depth_scenes
+# cleanup_depth_data() silently drops any configured scene that never had
+# official depth annotations to begin with - this just makes that visible.
+# ------------------------------------------------------------------
+verify_depth_scenes() {
+    local all_scenes=("${TRAIN_SCENES[@]}" "${VAL_SCENES[@]}" "${TEST_SCENES[@]}")
+    local s split found missing=0
+    for s in "${all_scenes[@]}"; do
+        found=0
+        for split in train val test; do
+            [ -d "${DEPTH_DIR}/${split}/${s}" ] && { found=1; break; }
+        done
+        if [ "$found" -eq 0 ]; then
+            echo "   ⚠️  ${s}: no depth ground truth found after cleanup (may not be part of the official depth release)."
+            missing=$((missing + 1))
+        fi
+    done
+    [ "$missing" -eq 0 ] && echo "   ✅ All ${#all_scenes[@]} configured scenes present in depth train/val/test."
+    return 0
+}
+
+# ------------------------------------------------------------------
+# merge_raw_into_depth
+# ASSUMPTION: only image_02 is kept from each side, and since depth's own
+# flattened folder is already called "image_02" (that's a depth map, not a
+# photo), keeping both under that name would collide. So this renames
+# depth's image_02 -> depth/, drops depth's image_03 entirely, and the RGB
+# image_02 migrated from kitti_raw becomes images/ instead. End state per
+# scene: <split>/<scene>/{images/, depth/}. If you wanted different names
+# here, this is the one line to change.
+#
+# A raw camera folder is itself image_02/{data/*.png, timestamps.txt} (KITTI's
+# own raw layout), not flat PNGs - only the frames inside data/ are pulled up
+# into images/, timestamps.txt is intentionally dropped, we don't need it.
+#
+# Only merges a raw scene if a matching depth scene folder already exists
+# for it (same split, same scene name) - otherwise the raw scene is left
+# untouched and reported, never silently deleted. kitti_raw/ is removed
+# only once every scene under it has actually been consumed: each merged
+# scene's own ".done_<scene>" marker is deleted the moment it's consumed
+# (otherwise that leftover marker is exactly what keeps the final rmdir
+# from ever succeeding, even after every real data folder is gone), and
+# rmdir (not rm -rf) is used throughout, so anything genuinely left behind
+# still survives.
+# ------------------------------------------------------------------
+merge_raw_into_depth() {
+    local split scene raw_scene_dir depth_scene_dir
+    local merged=0 skipped=0
+
+    for split in train val test; do
+        [ -d "${RAW_DIR}/${split}" ] || continue
+        for raw_scene_dir in "${RAW_DIR}/${split}"/*/; do
+            [ -d "$raw_scene_dir" ] || continue
+            scene="$(basename "$raw_scene_dir")"
+            depth_scene_dir="${DEPTH_DIR}/${split}/${scene}"
+
+            if [ ! -d "$depth_scene_dir" ]; then
+                echo "   ⚠️  ${scene}: no matching depth scene in ${split}/ yet - leaving raw data at ${raw_scene_dir} untouched."
+                skipped=$((skipped + 1))
+                continue
+            fi
+            if [ ! -d "${raw_scene_dir}image_02/data" ]; then
+                echo "   ⚠️  ${scene}: no image_02/data under raw data - nothing to migrate."
+                skipped=$((skipped + 1))
+                continue
+            fi
+
+            rm -rf "${depth_scene_dir}/image_03"
+            if [ -d "${depth_scene_dir}/image_02" ]; then
+                rm -rf "${depth_scene_dir}/depth"
+                mv "${depth_scene_dir}/image_02" "${depth_scene_dir}/depth"
+            fi
+
+            rm -rf "${depth_scene_dir}/images"
+            mkdir -p "${depth_scene_dir}/images"
+            mv "${raw_scene_dir}image_02/data/"* "${depth_scene_dir}/images/" 2>/dev/null || true
+
+            rm -rf "$raw_scene_dir"
+            rm -f "${RAW_DIR}/.done_${scene}"
+            merged=$((merged + 1))
+        done
+        # Only removes a split folder that merging actually fully emptied;
+        # a no-op (fails silently) if anything was skipped and left behind.
+        rmdir "${RAW_DIR}/${split}" 2>/dev/null || true
+    done
+    rmdir "$RAW_DIR" 2>/dev/null || true
+
+    echo "   ✅ Merged ${merged} scene(s) into ${DEPTH_DIR}; ${skipped} skipped (see warnings above, if any)."
+}
+
+# ------------------------------------------------------------------
+# finalize_depth_dataset
+# Runs after merge_raw_into_depth has produced <split>/<scene>/{images,depth}.
+# Per scene:
+#   0. Defensive cleanup for scenes coming from an older run of this script:
+#      if images/ still has a nested data/ (+ timestamps.txt) instead of
+#      flat frames, flatten it first.
+#   1. Prune to an exact 1:1 pairing: depth ground truth doesn't cover every
+#      raw frame, so images/ always starts out as a superset - any filename
+#      present on only one side of images/ vs depth/ is deleted.
+#   2. Dissolve the scene folder: paired files move up into a single
+#      <split>/images/ and <split>/depth/, renamed "<scene>__<filename>" so
+#      frames from different scenes sharing a split can never collide.
+# Idempotent via a marker file; safe to re-run.
+# ------------------------------------------------------------------
+finalize_depth_dataset() {
+    local marker="${DEPTH_DIR}/.done_depth_finalize"
+    if [ -f "$marker" ]; then
+        echo "   [SKIP] Depth data already paired and flattened."
+        return 0
+    fi
+
+    local split scene_dir scene f base kept=0 dropped=0
+
+    for split in train val test; do
+        [ -d "${DEPTH_DIR}/${split}" ] || continue
+
+        # Capture the scene list BEFORE creating the split-level images/depth/
+        # destination folders below - otherwise those two folders would show
+        # up in the glob on the very next loop and get mistaken for scenes.
+        local scene_dirs=()
+        for scene_dir in "${DEPTH_DIR}/${split}"/*/; do
+            [ -d "$scene_dir" ] || continue
+            scene_dirs+=("$scene_dir")
+        done
+
+        mkdir -p "${DEPTH_DIR}/${split}/images" "${DEPTH_DIR}/${split}/depth"
+
+        for scene_dir in "${scene_dirs[@]}"; do
+            scene="$(basename "$scene_dir")"
+
+            if [ -d "${scene_dir}images/data" ]; then
+                mv "${scene_dir}images/data/"* "${scene_dir}images/" 2>/dev/null || true
+                rm -rf "${scene_dir}images/data" "${scene_dir}images/timestamps.txt"
+            fi
+
+            if [ ! -d "${scene_dir}images" ] || [ ! -d "${scene_dir}depth" ]; then
+                echo "   ⚠️  ${scene}: missing images/ or depth/ - leaving as-is, not flattened."
+                continue
+            fi
+
+            for f in "${scene_dir}images/"*; do
+                [ -f "$f" ] || continue
+                base="$(basename "$f")"
+                if [ -f "${scene_dir}depth/${base}" ]; then
+                    kept=$((kept + 1))
+                else
+                    rm -f "$f"
+                    dropped=$((dropped + 1))
+                fi
+            done
+            for f in "${scene_dir}depth/"*; do
+                [ -f "$f" ] || continue
+                base="$(basename "$f")"
+                if [ ! -f "${scene_dir}images/${base}" ]; then
+                    rm -f "$f"
+                    dropped=$((dropped + 1))
+                fi
+            done
+
+            for f in "${scene_dir}images/"*; do
+                [ -f "$f" ] || continue
+                mv "$f" "${DEPTH_DIR}/${split}/images/${scene}__$(basename "$f")"
+            done
+            for f in "${scene_dir}depth/"*; do
+                [ -f "$f" ] || continue
+                mv "$f" "${DEPTH_DIR}/${split}/depth/${scene}__$(basename "$f")"
+            done
+
+            rm -rf "$scene_dir"
+        done
+    done
+
+    touch "$marker"
+    echo "   ✅ Paired + flattened depth data: ${kept} matched frame(s) kept, ${dropped} unpaired file(s) dropped."
+}
+
 echo "==========================================================="
 echo "🚀 Starting KITTI Benchmarks Download Pipeline"
 echo "==========================================================="
@@ -246,32 +467,35 @@ SEG_DIR="${BASE_DIR}/kitti_semantics"
 DEPTH_DIR="${BASE_DIR}/kitti_depth"
 RAW_DIR="${BASE_DIR}/kitti_raw"
 
-echo "-> [1/5] Downloading Object Detection Images (12GB)..."
+echo "-> [1/6] Downloading Object Detection Images (12GB)..."
 fetch_and_extract "Object Detection Images" "$URL_OBJ_IMG" "$OBJ_DIR" "data_object_image_2.zip" || true
 
-echo "-> [2/5] Downloading Object Detection Labels (5MB)..."
+echo "-> [2/6] Downloading Object Detection Labels (5MB)..."
 fetch_and_extract "Object Detection Labels" "$URL_OBJ_LBL" "$OBJ_DIR" "data_object_label_2.zip" || true
 
-echo "-> [3/5] Downloading Semantic Segmentation (298MB)..."
+echo "   Splitting kitti_object 7:2:1 (train:val:test) from training/ only -"
+echo "   official testing/ has no public labels, so it's discarded rather than kept."
+split_dataset "$OBJ_DIR" "image_2" "7:2:1" "0" "image_2=images,label_2=labels" || true
+
+echo "-> [3/6] Downloading Semantic Segmentation (298MB)..."
 fetch_and_extract "Semantic Segmentation" "$URL_SEG" "$SEG_DIR" "data_semantics.zip" || true
 
-# Trigger the physical 80/20 split for Object and Segmentation immediately after downloading
-split_object_and_semantics
+echo "   Splitting kitti_semantics 7:2:1 (train:val:test) from training/ only -"
+echo "   official testing/ has no public labels, so it's discarded rather than kept."
+split_dataset "$SEG_DIR" "image_2" "7:2:1" "0" "image_2=images" || true
 
-echo "-> [4/5] Downloading Depth Estimation Ground Truth (15GB)..."
+echo "-> [4/6] Downloading Depth Estimation Ground Truth (15GB)..."
 if fetch_and_extract "Depth Estimation" "$URL_DEPTH" "$DEPTH_DIR" "data_depth_annotated.zip"; then
-    # Clean up and split the massive 15GB depth dataset into our 5 minimal scenes
     cleanup_depth_data
+    verify_depth_scenes
 else
     FAILED_TASKS+=("Depth Estimation Download/Extraction")
 fi
 
-echo "-> [5/5] Downloading and Restructuring Raw Data (Applying Train/Val/Test Split)..."
+echo "-> [5/6] Downloading and Restructuring Raw Data (Applying Train/Val/Test Split)..."
 
-# Ensure the root RAW_DIR and the three split folders are created
 mkdir -p "${RAW_DIR}/train" "${RAW_DIR}/val" "${RAW_DIR}/test"
 
-# Verify that our category array matches the chosen sequence array
 if [ "${#RAW_CATEGORIES[@]}" -ne "${#RAW_FIRST_DRIVE[@]}" ]; then
     echo "❌ RAW_CATEGORIES and RAW_FIRST_DRIVE are out of sync."
     FAILED_TASKS+=("Raw Data (config error)")
@@ -279,8 +503,7 @@ else
     for i in "${!RAW_CATEGORIES[@]}"; do
         cat_name="${RAW_CATEGORIES[$i]}"
         drive="${RAW_FIRST_DRIVE[$i]}"
-        
-        # Determine which split folder this specific drive should be placed in
+
         split_folder=""
         for s in "${TRAIN_SCENES[@]}"; do
             if [ "$drive" == "$s" ]; then split_folder="train"; break; fi
@@ -296,49 +519,51 @@ else
             done
         fi
 
-        # Skip if the drive was not defined in any of the split arrays
         if [ -z "$split_folder" ]; then
             echo "   -> [SKIP] ${drive} is not assigned to train/val/test splits."
             continue
         fi
-        
-        # Extract the date string (e.g., "2011_09_26" from "2011_09_26_drive_0001") for internal extraction routing
+
         date_str="${drive:0:10}"
-        
         target_dir="${RAW_DIR}/${split_folder}/${drive}"
         marker="${RAW_DIR}/.done_${drive}"
-        
+        tmp_dir="${RAW_DIR}/tmp_${drive}"
+
         echo "   -> [$(( i + 1 ))/${#RAW_CATEGORIES[@]}] Extracting ${drive} directly to kitti_raw/${split_folder}/ ..."
 
-        # Skip extraction if this specific scene has already been fully processed
         if [ -f "$marker" ] || [ -d "$target_dir" ]; then
             echo "      [SKIP] ${drive} already structured in ${split_folder}/."
             continue
         fi
 
         zip_url="${RAW_BASE_URL}/${drive}/${drive}_sync.zip"
-        zip_file="${RAW_DIR}/${drive}_sync.zip"
-        tmp_dir="${RAW_DIR}/tmp_${drive}"
 
-        if download_with_retry "$zip_url" "$zip_file"; then
-            echo "      Unzipping..."
-            unzip -q -o "$zip_file" -d "$tmp_dir"
-            
-            # The internal KITTI structure is nested: tmp_dir/2011_09_26/2011_09_26_drive_0001_sync
-            # Move the innermost folder out to the correct split directory and rename it (removing '_sync')
-            mv "${tmp_dir}/${date_str}/${drive}_sync" "$target_dir"
-            
-            # Clean up the temporary extraction folders and the downloaded zip file
-            rm -rf "$tmp_dir"
-            rm -f "$zip_file"
-            touch "$marker"
-            echo "      ✅ Restructured to ${target_dir}"
-        else
-            echo "❌ Failed to download/verify Raw Data: ${drive}"
-            FAILED_TASKS+=("Raw Data - ${drive}")
+        # Routed through fetch_and_extract (into a scratch tmp_dir) instead of
+        # a bare download_with_retry + unzip, so this gets the same
+        # unzip -tq integrity check and retry/resume as every other download.
+        if fetch_and_extract "Raw Data - ${cat_name} (${drive})" "$zip_url" "$tmp_dir" "${drive}_sync.zip"; then
+            src="${tmp_dir}/${date_str}/${drive}_sync"
+            if [ -d "$src" ]; then
+                mv "$src" "$target_dir"
+                rm -rf "$tmp_dir"
+                touch "$marker"
+                echo "      ✅ Restructured to ${target_dir}"
+            else
+                # Deliberately NOT touching $marker and NOT deleting tmp_dir:
+                # a layout mismatch becomes a loud, retryable failure instead
+                # of a silent "success" that's actually empty.
+                echo "❌ ${drive}: expected ${src} after unzip but it's not there - inspect ${tmp_dir} manually."
+                FAILED_TASKS+=("Raw Data - ${drive} (unexpected zip layout)")
+            fi
         fi
     done
 fi
+
+echo "-> [6/6] Merging Raw RGB (image_02) into the matching Depth scenes..."
+merge_raw_into_depth
+
+echo "   Pairing images<->depth 1:1 and flattening scene folders..."
+finalize_depth_dataset
 
 echo "==========================================================="
 if [ ${#FAILED_TASKS[@]} -eq 0 ]; then

@@ -1,0 +1,3 @@
+- ✅ dataset preparation code with data structure preprocessing
+- ✅ finish scripts for `object detection`/`semantic segmentation`/`depth estimation` task (dataset prepare, train, inference, evaluation)
+- ✅ finish testing on dummy dataset(first 7 images for `train`, then 2 images for `val` and 1 image for `test`)

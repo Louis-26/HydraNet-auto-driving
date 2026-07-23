@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from train_detection import build_parser as build_detection_parser, run_training
+from framework.scripts.object_detection.train_detection import build_parser as build_detection_parser, run_training
 
 
 def build_parser():

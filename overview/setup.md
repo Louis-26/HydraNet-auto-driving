@@ -3,26 +3,14 @@
 With `mobilenetv2` as the shared encoder, we used `Lightweight Refinenet` for semantic segmentation and depth estimation, `YOLOv8` for object detection, 
 
 ## step 1: Environment Setup
-
-The project now includes a bootstrap script:
-
-`cv-multitask-learning-project/scripts/setup_env.sh`
-
-Recommended usage:
-
 ```bash
-cd cv-multitask-learning-project/scripts
-bash setup_env.sh hydranet
-```
-
-What the script does:
-
-```bash
-cd $(git rev-parse --show-toplevel)/cv-multitask-learning-project
+cd $(git rev-parse --show-toplevel)/framework
 conda create -n hydranet python=3.11 -y
 conda activate hydranet
 pip install torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
+cd scripts
+bash pretrained_weight_download.sh  
 ```
 
 Notes:
@@ -45,7 +33,9 @@ What it downloads:
 - The script loops through the raw sequence list and expands each archive in place.
 
 After that, you can find out the structure of the KITTI data under
-`cv-multitask-learning-project/data/` with
+`framework/data/`.
+
+More details regarding the selection of KITTI dataset has been illustrated [here](../overview/dataset.md)
 
 
 ### reference
@@ -62,156 +52,53 @@ After that, you can find out the structure of the KITTI data under
   - webpage: https://www.cvlibs.net/datasets/kitti/eval_semseg.php?benchmark=semantics
   - dataset download link: https://s3.eu-central-1.amazonaws.com/avg-kitti/data_semantics.zip
 
-## step 3: test with the demo dataset
-
-## toy train/infer/eval
-prepare toy example
-```bash
-cd $(git rev-parse --show-toplevel)/cv-multitask-learning-project
-mkdir -p dummy_data/labels dummy_data/images
-cp kitti_raw_data/2011_09_26/2011_09_26_drive_0001_sync/image_02/data/0000000000.png dummy_data/images/
-cp kitti_raw_data/2011_09_26/2011_09_26_drive_0001_sync/image_02/data/0000000001.png dummy_data/images/
-echo "Car 0.0 0 0.0 100.0 100.0 200.0 200.0 1.5 1.6 3.1 0.0 1.6 5.0 0.0" > dummy_data/labels/0000000000.txt
-echo "Car 0.0 0 0.0 150.0 120.0 250.0 220.0 1.5 1.6 3.1 0.0 1.6 5.0 0.0" > dummy_data/labels/0000000001.txt
-echo "cv-multitask-learning-project/dummy_data" >> ../.gitignore
-```
-### train
-```bash
-python scripts/train_detection.py \
-    --train-image-dir dummy_data/images \
-    --train-label-dir dummy_data/labels \
-    --epochs 1 \
-    --batch-size 2 \
-    --output-dir ./dummy_data/outputs \
-    --amp
-```
-
-### inference
-```bash
-python scripts/inference.py \
-  --input dummy_data/images \
-  --seg-ckpt checkpoints/ExpKITTI_joint.ckpt \
-  --det-ckpt ./dummy_data/outputs/best.pth
-```
-
-### evaluation
-```bash
-python scripts/evaluate.py \
-  --image-dir dummy_data/images \
-  --label-dir dummy_data/labels \
-  --seg-ckpt checkpoints/ExpKITTI_joint.ckpt \
-  --det-ckpt ./dummy_data/outputs/best.pth
-```
-
-## step 4: Training 
-Freeze the MobileNetV2 encoder and train the YOLO detection head only. The training script is:
+## step 3: Dataset Preprocessing
+- produce YOLOv8 compatible label format for object detection task 
 
 ```bash
-python scripts/train_detection.py \
-  --train-image-dir /path/to/images/train \
-  --train-label-dir /path/to/labels/train \
-  --val-image-dir /path/to/images/val \
-  --val-label-dir /path/to/labels/val \
-  --seg-ckpt checkpoints/ExpKITTI_joint.ckpt \
-  --det-num-classes 14 \
-  --parser kitti
+cd $(git rev-parse --show-toplevel)/framework
+python dataloaders/dataset_preprocess.py
 ```
 
-What this does:
-
-- Loads the shared pretrained seg/depth checkpoint.
-- Attaches the YOLOv8-style detection head.
-- Freezes the shared encoder/decoder by default.
-- Trains only the detection head unless `--train-backbone` is enabled.
-- Saves checkpoints under `outputs/yolo_seg_depth/experiments/hydranet_od`.
-
-Training checkpoint output:
-
-- `best.pth`
-- `epoch_XXX.pth`
-
-The training script uses:
-
-- YOLOv8-style detection loss with DFL + CIoU + BCE.
-- Albumentations-based resizing and augmentation.
-- AMP when `--amp` is enabled.
-
-## step 5: Inference
-
-The main inference entry point is:
+- provide object detection bounding box visualization in addition to the original image 
 
 ```bash
-python scripts/inference.py \
-  --input data \
-  --seg-ckpt checkpoints/ExpKITTI_joint.ckpt \
-  --det-ckpt outputs/yolo_seg_depth/experiments/hydranet_od/best.pth
+python ./dataloaders/od_dataset_annotate.py --dataset_dir ./data/kitti_object/
 ```
 
-What it does:
+## step 4: test with the dummy dataset
 
-- Loads the shared model and YOLO detection head.
-- Runs segmentation, depth, and YOLO detection on each frame.
-- Stacks the outputs into a single video.
-- Saves the result to `outputs/videos/out.mp4`.
-
-Optional behavior:
-
-- Use `--save-frames` to also export per-frame images.
-- Use `--conf-thres` and `--iou-thres` to tune detection filtering.
-
-## step 6: Evaluation 
-
-The evaluation entry point is:
+prepare dummy dataset as toy example for verification that the code logic is working
 
 ```bash
-python scripts/evaluate.py \
-  --image-dir /path/to/images/val \
-  --label-dir /path/to/labels/val \
-  --seg-ckpt checkpoints/ExpKITTI_joint.ckpt \
-  --det-ckpt outputs/yolo_seg_depth/experiments/hydranet_od/best.pth
+cd $(git rev-parse --show-toplevel)/framework
+python scripts/prepare_dummy.py
 ```
 
-The evaluator reports:
+In the following steps, with `XX` in {od, ss, de, multitask} for object detection, semantic segmentation, depth estimation, and multitask learning, respectively.
 
-- `mAP50`
-- per-class `AP50`
+- train step:
+```bash
+cd $(git rev-parse --show-toplevel)/framework
+python scripts/XX/train_XX.py 
+```
 
-The output can optionally be dumped to JSON with `--output-json`.
+- inference step:
+```bash
+cd $(git rev-parse --show-toplevel)/framework
+python scripts/XX/inference_XX.py 
+```
 
-## 7) Compatibility Scripts
+- evaluation step:
+```bash
+python scripts/XX/evaluate_XX.py 
+```
 
-These scripts remain in the repo as compatibility or helper entry points:
+if XX is `od` or `multitask`, 
+use the following to verify the code functionality 
+```bash
+python scripts/XX/evaluate_XX.py --split train
+```
 
-- `cv-multitask-learning-project/scripts/train_multitask.py`
-- `cv-multitask-learning-project/scripts/train_seg_depth.py`
-
-In this cleaned branch, the practical emphasis is the YOLO detection path, so these scripts are kept as lightweight wrappers or stage-1 helpers rather than the primary workflow.
-
-## 8) What Changed
-
-### New code files created
-
-- `cv-multitask-learning-project/multitask_project/heads/bbox_loss.py`
-- `cv-multitask-learning-project/multitask_project/heads/tal.py`
-- `cv-multitask-learning-project/multitask_project/heads/detection_loss.py`
-- `cv-multitask-learning-project/scripts/yolo_pipeline.py`
-- `cv-multitask-learning-project/scripts/setup_env.sh`
-
-### Code files changed
-
-- `cv-multitask-learning-project/multitask_project/multitask_model.py`
-- `cv-multitask-learning-project/multitask_project/heads/__init__.py`
-- `cv-multitask-learning-project/multitask_project/heads/detection_utils.py`
-- `cv-multitask-learning-project/multitask_project/heads/yolov8_head.py`
-- `cv-multitask-learning-project/scripts/raw_data_downloader.sh`
-- `cv-multitask-learning-project/scripts/train_detection.py`
-- `cv-multitask-learning-project/scripts/train_multitask.py`
-- `cv-multitask-learning-project/scripts/train_seg_depth.py`
-- `cv-multitask-learning-project/scripts/inference.py`
-- `cv-multitask-learning-project/scripts/evaluate.py`
-- `overview/setup.md`
-
-### Changed or created `.sh` files
-
-- Created: `cv-multitask-learning-project/scripts/setup_env.sh`
-- Changed: `cv-multitask-learning-project/scripts/raw_data_downloader.sh`
+## step 5: Train/Inference/Evaluate on KITTI dataset
+Repeat the same steps as above, but replace the dataset path with the KITTI dataset path.

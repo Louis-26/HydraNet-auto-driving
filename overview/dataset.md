@@ -1,33 +1,48 @@
 # KITTI dataset
 ## Dataset structure
-dataset/ 
+data/ 
 ├── kitti_object/
-|   ├── training/
+|   ├── train/
 |   │   ├── images/      
-│   |   └── labels/       
-│	├── testing/
-|   │   └── images/      
+|   │   ├── labels/      
+│   |   └── YOLO_labels/
+|   ├── val/   
+|   │   ├── images/      
+|   │   ├── labels/      
+│   |   └── YOLO_labels/
+│	├── test/
+|   │   ├── images/      
+|   │   ├── labels/      
+│   |   └── YOLO_labels/
 ├── kitti_semantics
-|   ├── training/
+|   ├── train/
 |   │   ├── images/      
 │   |   ├── instance/       
 │   |   ├── semantic/       
 │   |   └── semantic_rgb/       
-│	├── testing/
-|   │   └── images/   
+|   ├── val/
+|   │   ├── images/      
+│   |   ├── instance/       
+│   |   ├── semantic/       
+│   |   └── semantic_rgb/       
+|   ├── test/
+|   │   ├── images/      
+│   |   ├── instance/       
+│   |   ├── semantic/       
+│   |   └── semantic_rgb/       
 ├── kitti_depth/
 |   ├── train/
-|   ├── train/
 |   └── val/ 
-├── kitti_raw/
-|   ├── train/
-|   ├── train/
-|   └── val/ 
+
 
 ## Dataset overview
+In each of the subset below, we only utilize image_2 as left camera colorful image set and rename that to `images`, and the corresponding label data folder was renamed as following:
+- KITTI depth: `depth`
+- KITTI object detection: `labels`
+- KITTI semantic segmentation: `semantic`
 
 ## KITTI Depth Estimation
-depth&raw data:     
+As the number of images is huge in original dataset, we include only part of original dataset from original depth & raw data(so that it is scalable)     
 "2011_09_26_drive_0001"   # City
 "2011_09_26_drive_0019"   # Residential
 "2011_09_26_drive_0015"   # Road
@@ -36,12 +51,15 @@ depth&raw data:
 
 
 ## KITTI Segmentation
-all available on KITTI
+We include all available images and semantic/instance segmented images on KITTI.
+
+For semantic segmented images, it includes **34** classes and i-th class has intensity value i. In reference dataset, each segmented image is relatively dark as the intensity value ranges from 0 to 33.  
+
 
 ## KITTI Object Detection
-include all folders available on KITTI, including images and labels for each folder
+We include all available images and labels for each folder on KITTI.
 
-original label(15 columns): 
+ground truth label data type is the following(15 columns): 
 - basic properties
     - column 1: class type(string, e.g. Car, Pedestrian, Cyclist)
     - column 2: truncated rate(float from 0-1, 0 means whole object is in image, 1 means object is fully truncated)
@@ -62,4 +80,16 @@ original label(15 columns):
     - column 14: depth of the object center in camera coordinates(float)
 - physical orientation
     - column 15: rotation angle of the object around the y-axis in camera coordinates(float, -pi to pi)
-preprocessed label
+
+example of label data:
+```txt
+Pedestrian 0.00 0 -0.20 712.40 143.00 810.73 307.92 1.89 0.48 1.20 1.84 1.47 8.41 0.01
+```
+
+However, the only useful attributes for our object detection task is 
+`(class_id, center_x, center_y, width, height)` of the bounding box. Therefore, we convert the original label data to a simplified format with 5 columns in data preprocesing:
+- column 1: class_id (integer, 0-13, 14 classes in total)
+- column 2: center_x (float, normalized by image width)
+- column 3: center_y (float, normalized by image height)
+- column 4: width (float, normalized by image width)    
+- column 5: height (float, normalized by image height)

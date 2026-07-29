@@ -102,3 +102,135 @@ python scripts/XX/evaluate_XX.py --split train
 
 ## step 5: Train/Inference/Evaluate on KITTI dataset
 Repeat the same steps as above, but replace the dataset path with the KITTI dataset path.
+
+### Object Detection (OD) solely
+- Train
+```bash
+cd $(git rev-parse --show-toplevel)/framework
+python scripts/od/train_od.py \
+    --data_root ./data/kitti_object/ \
+    --epochs 100 \
+    --batch_size 32 \
+    --device cuda \
+    --save_dir ./checkpoints/runs/official 
+
+```
+
+- Inference
+```bash
+cd $(git rev-parse --show-toplevel)/framework
+python scripts/od/inference_od.py \
+    --weights ./checkpoints/runs/official/best_detection_model.pth \
+    --source ./data/kitti_object/test/images/ \
+    --conf_thres 0.5 \
+    --iou_thres 0.5 \
+    --out_dir ./outputs/official/od  
+    
+```
+
+- Evaluation
+```bash
+cd $(git rev-parse --show-toplevel)/framework
+python scripts/od/evaluate_od.py \
+    --weights ./checkpoints/runs/official/best_detection_model.pth \
+    --data_root ./data/kitti_object/ \
+    --conf_thres 0.5 \
+    --iou_thres 0.5 
+```
+
+### Semantic Segmentation (SS) solely
+- Train
+```bash
+cd $(git rev-parse --show-toplevel)/framework
+python scripts/ss/train_ss.py \
+    --data_root ./data/kitti_semantics/ \
+    --epochs 100 \
+    --batch_size 32 \
+    --device cuda \
+    --save_dir ./checkpoints/runs/official 
+```
+
+- Inference
+```bash
+cd $(git rev-parse --show-toplevel)/framework
+python scripts/ss/inference_ss.py \
+    --weights ./checkpoints/runs/official/best_segmentation_model.pth \
+    --source ./data/kitti_semantics/test/images \
+    --out_dir ./outputs/official/ss
+```
+
+- Evaluation
+```bash
+cd $(git rev-parse --show-toplevel)/framework
+python scripts/ss/evaluate_ss.py \
+    --pred_dir outputs/official/ss/semantic \
+    --data_root data/kitti_semantics \
+    --split test \
+    --num_classes 7
+
+```
+
+### Depth Estimation (DE) solely
+- Train
+```bash
+cd $(git rev-parse --show-toplevel)/framework
+python scripts/de/train_de.py \
+    --data_root ./data/kitti_depth/ \
+    --epochs 100 \
+    --batch_size 32 \
+    --device cuda \
+    --save_dir ./checkpoints/runs/official 
+```
+
+- Inference
+```bash
+cd $(git rev-parse --show-toplevel)/framework
+python scripts/de/inference_de.py \
+    --weights checkpoints/runs/official/best_depth_model.pth \
+    --source_img data/kitti_depth/test/images \
+    --source_gt data/kitti_depth/test/depth \
+    --out_dir outputs/official/de
+```
+
+- Evaluation
+```bash
+cd $(git rev-parse --show-toplevel)/framework
+python scripts/de/evaluate_de.py \
+    --pred_dir outputs/official/de/predicted_depth \
+    --data_root data/kitti_depth \
+    --split test
+```
+
+### Multitask 
+- Train
+```bash
+cd $(git rev-parse --show-toplevel)/framework
+python scripts/multitask/train_multitask.py \
+    --data_root ./data \
+    --save_dir checkpoints/runs/official \
+    --epochs 100 \
+    --batch_size 64 \
+    --lr 0.0002 \
+    --lambda_od 1.0 \
+    --lambda_ss 1.0 \
+    --lambda_de 2.0 \
+    --num_workers 4 \
+    --print_freq 10
+```
+
+- Inference
+```bash
+cd $(git rev-parse --show-toplevel)/framework
+python scripts/multitask/inference_multitask.py \
+    --weights checkpoints/runs/official/best_multitask_model.pth \
+    --data_root data \
+    --split test \
+    --out_dir outputs/official/multitask 
+
+```
+
+- Evaluation
+```bash
+cd $(git rev-parse --show-toplevel)/framework
+python scripts/multitask/evaluate_multitask.py
+```

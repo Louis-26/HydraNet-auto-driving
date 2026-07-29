@@ -1,5 +1,8 @@
 import os
 import sys
+import argparse
+import random
+import numpy as np
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -9,7 +12,6 @@ from torch.utils.data import DataLoader
 # ==========================================
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(CURRENT_DIR))
-
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
@@ -17,105 +19,143 @@ from dataloaders.kitti_dataset import KittiDetectionDataset, kitti_collate_fn
 from models.model import HydraNetDetectionModel
 from utils.loss import YOLOLoss
 
-def main():
-    print("=============================================")
-    print("🚀 Initiating Training & Validation Pipeline...")
-    print("=============================================")
+# ==========================================
+# Argument Parser
+# ==========================================
+def parse_args():
+    parser = argparse.ArgumentParser(description="HydraNet Object Detection Training")
 
-    # 1. Hardware Configuration
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Dataset & Dimensions
+    parser.add_argument("--data_root", type=str, default=os.path.join(PROJECT_ROOT, "dummy_data", "od"), help="Root directory of dataset")
+    parser.add_argument("--num_classes", type=int, default=7, help="Number of detection classes")
+    parser.add_argument("--img_h", type=int, default=192, help="Input image height")
+    parser.add_argument("--img_w", type=int, default=640, help="Input image width")
+
+    # Training Hyperparameters
+    parser.add_argument("--epochs", type=int, default=100, help="Total training epochs")
+    parser.add_argument("--batch_size", type=int, default=2, help="Batch size per GPU")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Initial learning rate")
+    parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay for optimizer")
+
+    # Runtime & Checkpoint
+    parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"], help="Computation device")
+    parser.add_argument("--num_workers", type=int, default=4, help="Number of dataloader workers")
+    parser.add_argument("--pin_memory", action="store_true", help="Pin memory for faster data transfer")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    parser.add_argument("--save_dir", default=os.path.join(PROJECT_ROOT, "checkpoints", "runs", "dummy"), help="Directory to save weights")
+    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
+    parser.add_argument("--print_freq", type=int, default=10, help="Frequency of printing epoch results")
+
+    return parser.parse_args()
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+def main():
+    args = parse_args()
+    set_seed(args.seed)
+
+    print("="*45)
+    print("🚀 Initiating Training & Validation Pipeline...")
+    print("="*45)
+
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # 2. Data Pipeline Assembly (Train & Val)
-    train_img_dir = os.path.join(PROJECT_ROOT, "dummy_data", "od", "train", "images")
-    train_lbl_dir = os.path.join(PROJECT_ROOT, "dummy_data", "od", "train", "YOLO_labels")
-    
-    val_img_dir = os.path.join(PROJECT_ROOT, "dummy_data", "od", "val", "images")
-    val_lbl_dir = os.path.join(PROJECT_ROOT, "dummy_data", "od", "val", "YOLO_labels")
+    # --- Dataset Paths ---
+    train_img_dir = os.path.join(args.data_root, "train", "images")
+    train_lbl_dir = os.path.join(args.data_root, "train", "YOLO_labels")
+    val_img_dir = os.path.join(args.data_root, "val", "images")
+    val_lbl_dir = os.path.join(args.data_root, "val", "YOLO_labels")
+    os.makedirs(args.save_dir, exist_ok=True)
 
-    # Checkpoint save directory
-    ckpt_dir = os.path.join(PROJECT_ROOT, "checkpoints", "runs")
-    os.makedirs(ckpt_dir, exist_ok=True)
+    # --- DataLoaders ---
+    train_dataset = KittiDetectionDataset(image_dir=train_img_dir, label_dir=train_lbl_dir, target_size=(args.img_h, args.img_w))
+    val_dataset = KittiDetectionDataset(image_dir=val_img_dir, label_dir=val_lbl_dir, target_size=(args.img_h, args.img_w))
 
-    train_dataset = KittiDetectionDataset(image_dir=train_img_dir, label_dir=train_lbl_dir, target_size=(192, 640))
-    val_dataset = KittiDetectionDataset(image_dir=val_img_dir, label_dir=val_lbl_dir, target_size=(192, 640))
-    
-    train_dataloader = DataLoader(train_dataset, batch_size=2, shuffle=True, collate_fn=kitti_collate_fn)
-    # Val dataloader typically doesn't need shuffling, batch_size can be 1 for precise metric tracking
-    val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=False, collate_fn=kitti_collate_fn)
+    train_loader = DataLoader(
+        train_dataset, batch_size=args.batch_size, shuffle=True, 
+        num_workers=args.num_workers, pin_memory=args.pin_memory, collate_fn=kitti_collate_fn
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=1, shuffle=False, 
+        num_workers=args.num_workers, pin_memory=args.pin_memory, collate_fn=kitti_collate_fn
+    )
 
-    # 3. Model, Loss, and Optimizer
-    model = HydraNetDetectionModel(num_classes=7).to(device)
-    criterion = YOLOLoss(num_classes=7).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    # --- Model, Loss, Optimizer ---
+    model = HydraNetDetectionModel(num_classes=args.num_classes).to(device)
+    criterion = YOLOLoss(num_classes=args.num_classes).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    # 4. The Training & Validation Loop
-    num_epochs = 100
-    best_val_loss = float('inf') # Initialize with infinity
-    
-    for epoch in range(num_epochs):
-        # =========================
-        #      TRAINING PHASE
-        # =========================
-        model.train() # Set model to training mode (enables Dropout, updates BatchNorm)
-        train_epoch_loss = 0.0
+    # --- Resume ---
+    best_val_loss = float("inf")
+    start_epoch = 0
+
+    if args.resume is not None:
+        print(f"Loading checkpoint: {args.resume}")
+        checkpoint = torch.load(args.resume, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        best_val_loss = checkpoint["best_val_loss"]
+        start_epoch = checkpoint["epoch"] + 1
+        print(f"Resume from epoch {start_epoch}")
+
+    # --- Training Loop ---
+    for epoch in range(start_epoch, args.epochs):
         
-        for images, targets in train_dataloader:
+        # 1. Train
+        model.train()
+        train_loss = 0.0
+        
+        for images, targets in train_loader:
             images, targets = images.to(device), targets.to(device)
-            # ================= 🚨 X光透视拦截点 =================
-            # print("\n🔍 [DEBUG] targets shape:", targets.shape)
-            # print("🔍 [DEBUG] targets 内容:\n", targets)
-            # sys.exit(0)  # 打印完直接杀掉程序，看一眼就够了
-            # ====================================================
+            
             optimizer.zero_grad()
             preds = model(images)
             loss = criterion(preds, targets)
+            
             loss.backward()
             optimizer.step()
-            train_epoch_loss += loss.item()
-            
-        avg_train_loss = train_epoch_loss / len(train_dataloader)
+            train_loss += loss.item()
 
-        # =========================
-        #     VALIDATION PHASE
-        # =========================
-        model.eval() # Set model to evaluation mode (freezes BatchNorm/Dropout)
-        val_epoch_loss = 0.0
+        avg_train_loss = train_loss / len(train_loader)
+
+        # 2. Validation
+        model.eval()
+        val_loss = 0.0
         
-        with torch.no_grad(): # CRITICAL: Disable gradient tracking to save memory and compute
-            for val_images, val_targets in val_dataloader:
-                val_images, val_targets = val_images.to(device), val_targets.to(device)
-                val_preds = model(val_images)
-                val_loss = criterion(val_preds, val_targets)
-                val_epoch_loss += val_loss.item()
-                
-        avg_val_loss = val_epoch_loss / len(val_dataloader)
+        with torch.no_grad():
+            for images, targets in val_loader:
+                images, targets = images.to(device), targets.to(device)
+                preds = model(images)
+                loss = criterion(preds, targets)
+                val_loss += loss.item()
 
-        # Print progress
-        if (epoch + 1) % 10 == 0:
-            print(f"Epoch [{epoch+1}/{num_epochs}] | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+        avg_val_loss = val_loss / len(val_loader)
 
-        # =========================
-        #     MODEL CHECKPOINTING
-        # =========================
-        # If the model performs better on Val, save it as the new best model
+        if (epoch + 1) % args.print_freq == 0:
+            print(f"Epoch [{epoch+1}/{args.epochs}] | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+
+        # 3. Save Best
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            save_path = os.path.join(ckpt_dir, "best_detection_model.pth")
+            save_path = os.path.join(args.save_dir, "best_detection_model.pth")
             torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'best_val_loss': best_val_loss,
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "best_val_loss": best_val_loss,
             }, save_path)
-            
-            # Print a small notification when a new record is set
-            if (epoch + 1) % 10 == 0:
-                 print(f"  --> 🌟 New Best Model Saved! (Val Loss: {best_val_loss:.4f})")
+            print(f"🌟 Best model updated (Epoch {epoch+1}, Val Loss {best_val_loss:.4f})")
 
-    print("=============================================")
-    print("✅ Training complete! Best model weights secured.")
-    print("=============================================")
+    print("="*45)
+    print("✅ Training Complete.")
+    print("="*45)
 
 if __name__ == "__main__":
     main()

@@ -142,7 +142,7 @@ def main():
     img_files = [f for f in os.listdir(source_dir) if f.endswith(('.png', '.jpg'))]
     
     if not img_files:
-        print(f"🤷‍♂️ No images found in {source_dir}.")
+        print(f"No images found in {source_dir}.")
         return
 
     for img_name in img_files:

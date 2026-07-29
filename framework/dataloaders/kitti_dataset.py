@@ -209,24 +209,24 @@ class KittiMultitaskDataset(Dataset):
         # ==========================================
         
         # 1. Gather Object Detection (OD) Samples
-        od_img_dir = os.path.join(data_root, "od", split, "images")
-        od_lbl_dir = os.path.join(data_root, "od", split, "YOLO_labels")
+        od_img_dir = os.path.join(data_root, "kitti_object", split, "images")
+        od_lbl_dir = os.path.join(data_root, "kitti_object", split, "YOLO_labels")
         if os.path.exists(od_img_dir):
             for f in os.listdir(od_img_dir):
                 if f.endswith(('.png', '.jpg')):
                     self.samples.append({'source_task': 'od', 'img_name': f, 'img_dir': od_img_dir, 'lbl_dir': od_lbl_dir})
                     
         # 2. Gather Semantic Segmentation (SS) Samples
-        ss_img_dir = os.path.join(data_root, "ss", split, "images")
-        ss_lbl_dir = os.path.join(data_root, "ss", split, "semantic")
+        ss_img_dir = os.path.join(data_root, "kitti_semantics", split, "images")
+        ss_lbl_dir = os.path.join(data_root, "kitti_semantics", split, "semantic")
         if os.path.exists(ss_img_dir):
             for f in os.listdir(ss_img_dir):
                 if f.endswith(('.png', '.jpg')):
                     self.samples.append({'source_task': 'ss', 'img_name': f, 'img_dir': ss_img_dir, 'lbl_dir': ss_lbl_dir})
                     
         # 3. Gather Depth Estimation (DE) Samples
-        de_img_dir = os.path.join(data_root, "de", split, "images")
-        de_lbl_dir = os.path.join(data_root, "de", split, "depth")
+        de_img_dir = os.path.join(data_root, "kitti_depth", split, "images")
+        de_lbl_dir = os.path.join(data_root, "kitti_depth", split, "depth")
         if os.path.exists(de_img_dir):
             for f in os.listdir(de_img_dir):
                 if f.endswith(('.png', '.jpg')):

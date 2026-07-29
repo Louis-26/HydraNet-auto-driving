@@ -7,16 +7,19 @@ from torch.utils.data import DataLoader
 from torchvision.ops import box_iou, batched_nms
 
 # ==========================================
-# 🚨 Bulletproof Path Resolution
+# Bulletproof Path Resolution
 # ==========================================
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(os.path.dirname(CURRENT_DIR))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(CURRENT_DIR)))
+if "framework" in CURRENT_DIR:
+    PROJECT_ROOT = CURRENT_DIR.split("framework")[0] + "framework"
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from dataloaders.kitti_dataset import KittiMultitaskDataset, multitask_collate_fn
 from models.model import HydraNetMultitaskModel
 
+# Safely attempt to import single-task metric functions
 try:
     from scripts.ss.evaluate_ss import compute_global_iou
     HAS_SS_METRICS = True
@@ -29,17 +32,27 @@ try:
 except ImportError:
     HAS_DE_METRICS = False
 
+
 def parse_args():
     parser = argparse.ArgumentParser(description="HydraNet 3-Task Unified Evaluation")
-    parser.add_argument('--data_root', type=str, default=os.path.join(PROJECT_ROOT, "dummy_data"),
-                        help='Root directory containing task dataset folders')
-    parser.add_argument('--weights', type=str, default=os.path.join(PROJECT_ROOT, 'checkpoints/runs/best_multitask_model.pth'))
-    parser.add_argument('--split', type=str, default='test', help='Dataset split to evaluate (val/test)')
-    parser.add_argument('--conf_thresh', type=float, default=0.01, help='Confidence threshold for mAP evaluation')
+    parser.add_argument('--data_root', type=str, 
+                        default=os.path.join(PROJECT_ROOT, "data"),
+                        help='Root directory containing official kitti_object, kitti_semantics, kitti_depth folders')
+    parser.add_argument('--weights', type=str, 
+                        default=os.path.join(PROJECT_ROOT, 'checkpoints', 'runs', 'official', 'best_multitask_model.pth'),
+                        help='Path to the trained joint multi-task model weights')
+    parser.add_argument('--split', type=str, default='test', choices=['val', 'test'], 
+                        help='Dataset split to evaluate')
+    parser.add_argument('--conf_thresh', type=float, default=0.01, 
+                        help='Confidence threshold for mAP evaluation')
     return parser.parse_args()
 
+
 def decode_yolo_dfl_multiclass(preds, img_size=(192, 640), conf_thresh=0.01):
-    if preds is None: return torch.empty((0,4)), torch.empty(0), torch.empty(0)
+    """Decodes DFL and multi-class classification predictions for Object Detection."""
+    if preds is None: 
+        return torch.empty((0,4)), torch.empty(0), torch.empty(0)
+        
     all_bboxes, all_scores, all_class_ids = [], [], []
     reg_max = 16 
     dfl_weights = torch.arange(reg_max, dtype=torch.float32, device=preds[0]['bbox'].device)
@@ -81,7 +94,9 @@ def decode_yolo_dfl_multiclass(preds, img_size=(192, 640), conf_thresh=0.01):
         
     return torch.cat(all_bboxes), torch.cat(all_scores), torch.cat(all_class_ids)
 
+
 def compute_ap(recall, precision):
+    """Computes the Average Precision (AP) given recall and precision arrays."""
     if len(recall) == 0: return 0.0
     mrec = np.concatenate(([0.0], recall, [1.0]))
     mpre = np.concatenate(([0.0], precision, [0.0]))
@@ -91,26 +106,25 @@ def compute_ap(recall, precision):
     ap = np.sum((mrec[i + 1] - mrec[i]) * mpre[i + 1])
     return ap
 
+
 def main():
     args = parse_args()
-    print("="*60)
+    print("="*65)
     print("🚀 Initiating HydraNet 3-Task Unified Evaluation")
     print(f"📊 Evaluating Split: {args.split.upper()}")
-    print("="*60)
+    print("="*65)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = HydraNetMultitaskModel(num_ss_classes=7, num_od_classes=7).to(device)
     if not os.path.exists(args.weights):
-        raise FileNotFoundError(f"❌ Weights not found at {args.weights}.")
+        raise FileNotFoundError(f"❌ Weights not found at {args.weights}. Please train the model first.")
         
     checkpoint = torch.load(args.weights, map_location=device)
     model.load_state_dict(checkpoint.get('model_state_dict', checkpoint), strict=False)
     model.eval()
+    print(f"✅ Unified Model loaded successfully from {args.weights}")
 
-    # 🔥 确保 Dataloader 使用正确的 kwargs 传递新的目录名称
-    # 假设你的 KittiMultitaskDataset 已经支持或者能够智能推断 'semantic' 目录
-    # 如果它内部还是写死的 'labels'，你需要去 dataset.py 里把它也改掉。
     val_loader = DataLoader(
         KittiMultitaskDataset(data_root=args.data_root, split=args.split), 
         batch_size=1,  
@@ -125,13 +139,11 @@ def main():
     all_od_gts = {}
     total_od_gt = 0
 
-    print("\nRunning forward passes and collecting metrics...")
+    print("\nRunning forward passes and collecting metrics across all tasks...")
     with torch.no_grad():
         for batch_idx, (images, od_targets, ss_masks, de_masks) in enumerate(val_loader):
             images = images.to(device)
             out_od, out_ss, out_de = model(images)
-            
-            # --- 🛡️ 任务间解耦：使用独立且安全的 Try-Except 块包裹 ---
             
             # --- Task 1: Semantic Segmentation ---
             try:
@@ -143,24 +155,29 @@ def main():
                             all_ss_preds.append(p)
                             all_ss_targets.append(t)
             except Exception as e:
-                print(f"\n⚠️ SS Evaluation skipped for batch {batch_idx}: {e}")
+                print(f"\n⚠️ SS Eval skipped for batch {batch_idx}: {e}")
 
-            # --- Task 2: Depth Estimation ---
+            # --- Task 2: Depth Estimation (🚨 完全修复版) ---
             try:
                 if out_de is not None and de_masks is not None:
-                    pred_de = out_de.squeeze(1).cpu().numpy()
+                    pred_de = out_de.cpu().numpy()
                     target_de = de_masks.numpy()
                     for p, t in zip(pred_de, target_de):
-                        if (t > 0).any():
-                            all_de_preds.append(p)
-                            all_de_targets.append(t)
+                        # 直接把预测图和标签图展平成一维，彻底干掉任何维度的猫腻
+                        p_flat = p.flatten()
+                        t_flat = t.flatten()
+                        
+                        valid_mask = t_flat > 1e-3
+                        if valid_mask.sum() > 0:
+                            all_de_preds.append(p_flat[valid_mask])
+                            all_de_targets.append(t_flat[valid_mask])
             except Exception as e:
-                print(f"\n⚠️ DE Evaluation skipped for batch {batch_idx}: {e}")
+                # 恢复打印，不能藏着报错
+                print(f"\n⚠️ DE Eval skipped for batch {batch_idx}: {e}")
 
-            # --- Task 3: Object Detection (Absolute Bulletproof) ---
+            # --- Task 3: Object Detection ---
             try:
                 if out_od is not None and od_targets is not None:
-                    # 1. Parse Ground Truths 
                     if isinstance(od_targets, (list, tuple)):
                         target_tensor = od_targets[0] if len(od_targets) > 0 else torch.empty((0, 5))
                     elif od_targets.ndim == 3:
@@ -184,9 +201,7 @@ def main():
                         
                     all_od_gts[batch_idx] = gt_data.cpu()
 
-                    # 2. Decode Predictions
                     boxes, scores, class_ids = decode_yolo_dfl_multiclass(out_od, conf_thresh=args.conf_thresh)
-                    
                     if len(boxes) > 0:
                         keep = batched_nms(boxes, scores, class_ids, iou_threshold=0.45)
                         for i in keep:
@@ -197,7 +212,7 @@ def main():
                                 'class_id': int(class_ids[i].item())
                             })
             except Exception as e:
-                print(f"\n⚠️ OD Evaluation skipped for batch {batch_idx}: {e}")
+                print(f"\n⚠️ OD Eval skipped for batch {batch_idx}: {e}")
 
             sys.stdout.write(f"\r  👉 Processed batch {batch_idx+1}/{len(val_loader)}")
             sys.stdout.flush()
@@ -214,7 +229,9 @@ def main():
     # 2. Compute DE Metrics
     abs_rel, rmse, a1 = 0.0, 0.0, 0.0
     if HAS_DE_METRICS and len(all_de_preds) > 0:
-        abs_rel, rmse, mae, a1, a2, a3 = compute_depth_metrics(np.stack(all_de_preds), np.stack(all_de_targets))
+        flat_preds = np.concatenate(all_de_preds, axis=0)
+        flat_targets = np.concatenate(all_de_targets, axis=0)
+        abs_rel, rmse, mae, a1, a2, a3 = compute_depth_metrics(flat_preds, flat_targets)
     
     # 3. Compute OD mAP Metrics
     final_map_50_95, final_map_50 = 0.0, 0.0
@@ -230,7 +247,6 @@ def main():
 
             for i, pred in enumerate(all_od_preds):
                 img_idx = pred['img_idx']
-                # Safeguard in case gt_data for this img_idx was never added
                 gt_data = all_od_gts.get(img_idx, torch.empty((0, 5))) 
                 
                 if len(gt_data) == 0:
@@ -239,25 +255,20 @@ def main():
                 
                 gt_boxes = gt_data[:, :4]
                 gt_classes = gt_data[:, 4]
-                
                 ious = box_iou(pred['box'].unsqueeze(0), gt_boxes).squeeze(0)
                 
-                best_iou = 0.0
-                best_idx = -1
+                best_iou, best_idx = 0.0, -1
                 for g_i in range(len(gt_boxes)):
                     if int(gt_classes[g_i].item()) == int(pred['class_id']) and ious[g_i] > best_iou:
-                        best_iou = ious[g_i].item()
-                        best_idx = g_i
+                        best_iou, best_idx = ious[g_i].item(), g_i
                 
                 if best_iou >= iou_thresh and best_idx != -1 and not gt_matched[img_idx][best_idx]:
-                    tp[i] = 1
-                    gt_matched[img_idx][best_idx] = True
+                    tp[i], gt_matched[img_idx][best_idx] = 1, True
                 else:
                     fp[i] = 1
 
             if total_od_gt > 0:
-                tp_cumsum = np.cumsum(tp)
-                fp_cumsum = np.cumsum(fp)
+                tp_cumsum, fp_cumsum = np.cumsum(tp), np.cumsum(fp)
                 recalls = tp_cumsum / total_od_gt
                 precisions = tp_cumsum / (tp_cumsum + fp_cumsum + 1e-16)
                 aps.append(compute_ap(recalls, precisions))
@@ -272,27 +283,22 @@ def main():
     # 🔥 Boss Report Generation
     # ==========================================
     print("\n" + "🔥"*12 + " HydraNet 3-Task Boss Report " + "🔥"*12)
-    
     print(f"🎯 [Object Detection] (Evaluated {len(all_od_gts)} samples)")
     print(f"     - mAP@[0.5:0.95] : {final_map_50_95:.2f}%")
     print(f"     - mAP@0.50       : {final_map_50:.2f}%")
     print("-" * 65)
-    
     print(f"🎨 [Semantic Segmentation] (Evaluated {len(all_ss_preds)} valid images)")
-    if HAS_SS_METRICS:
-        print(f"     - mIoU           : {mIoU:.2f}%")
-    else:
-        print(f"     - mIoU           : [Missing evaluate_ss module]")
+    if HAS_SS_METRICS: print(f"     - mIoU           : {mIoU:.2f}%")
+    else: print(f"     - mIoU           : [Missing evaluate_ss module]")
     print("-" * 65)
     
-    print(f"📏 [Depth Estimation] (Evaluated {len(all_de_preds)} valid images)")
+    # 注意这里，我专门把打印日志改成输出真实评估的像素片段数，这样你就知道究竟算了多大数据量
+    print(f"📏 [Depth Estimation] (Evaluated {len(all_de_preds)} valid image regions)")
     if HAS_DE_METRICS:
         print(f"     - AbsRel         : {abs_rel:.4f}  ↓ (Lower is better)")
         print(f"     - RMSE           : {rmse:.4f}  ↓")
         print(f"     - Acc <1.25      : {a1*100:.2f}%  ↑ (Higher is better)")
-    else:
-        print(f"     - Metrics        : [Missing evaluate_de module]")
-        
+    else: print(f"     - Metrics        : [Missing evaluate_de module]")
     print("="*65)
     print("🎉 Ultimate Multi-Task Evaluation Finished Successfully!")
 
